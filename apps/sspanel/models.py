@@ -1102,6 +1102,18 @@ class SSNode(BaseAbstractNode):
 
 
 class RelayNode(BaseAbstractNode):
+
+    CMCC = "移动"
+    CUCC = "联通"
+    CTCC = "电信"
+    BGP = "BGP"
+    ISP_TYPES = (
+        (CMCC, "移动"),
+        (CUCC, "联通"),
+        (CTCC, "电信"),
+        (BGP, "BGP"),
+    )
+
     #  去除一些不需要的字段
     info = None
     level = None
@@ -1112,6 +1124,7 @@ class RelayNode(BaseAbstractNode):
     ehco_transport_type = None
 
     server = models.CharField("服务器地址", max_length=128)
+    isp = models.CharField("ISP线路", max_length=64, choices=ISP_TYPES, default=BGP)
 
     class Meta:
         verbose_name_plural = "中转节点"
@@ -1171,21 +1184,7 @@ class RelayNode(BaseAbstractNode):
 
 class BaseRelayRule(models.Model):
 
-    CMCC = "中国移动"
-    CUCC = "中国联通"
-    CTCC = "中国电信"
-    BGP = "BGP三线"
-    ISP_TYPES = (
-        (CMCC, "中国移动"),
-        (CUCC, "中国联通"),
-        (CTCC, "中国电信"),
-        (BGP, "BGP三线"),
-    )
-
-    relay_host = models.CharField("中转地址", max_length=64, blank=False, null=False)
     relay_port = models.CharField("中转端口", max_length=64, blank=False, null=False)
-    remark = models.CharField("备注", max_length=256, blank=True, null=True)
-    isp = models.CharField("ISP线路", max_length=64, choices=ISP_TYPES, default=BGP)
     listen_type = models.CharField(
         "监听类型", max_length=64, choices=c.LISTEN_TYPES, default=c.LISTEN_RAW
     )
@@ -1206,6 +1205,19 @@ class BaseRelayRule(models.Model):
         if self.relay_node:
             return self.relay_node.enable
         return True
+
+    @property
+    def relay_host(self):
+        return self.relay_node.server
+
+    @property
+    def remark(self):
+        remark = f"{self.relay_node.name}{self.relay_node.isp}-"
+        if self.node_type == "vmess":
+            remark += f"{self.vmess_node.name}-vmess"
+        else:
+            remark += f"{self.ss_node.name}-ss"
+        return remark
 
 
 class VmessRelayRule(BaseRelayRule):
@@ -1249,6 +1261,10 @@ class VmessRelayRule(BaseRelayRule):
         }
         return f"vmess://{base64.urlsafe_b64encode(json.dumps(data).encode()).decode()}"
 
+    @property
+    def node_type(self):
+        return "vmess"
+
 
 class SSRelayRule(BaseRelayRule):
 
@@ -1280,6 +1296,10 @@ class SSRelayRule(BaseRelayRule):
         b64_code = base64.urlsafe_b64encode(code.encode()).decode()
         ss_link = "ss://{}#{}".format(b64_code, quote(self.remark))
         return ss_link
+
+    @property
+    def node_type(self):
+        return "ss"
 
 
 class UserTrafficLog(models.Model, UserPropertyMixin):
