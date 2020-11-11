@@ -2,7 +2,6 @@ from django import forms
 from django.contrib.auth.forms import UserCreationForm
 from django.forms import ModelForm
 
-from apps.constants import AEAD_METHODS
 from apps.sspanel.models import (
     Announcement,
     Goods,
@@ -154,21 +153,6 @@ class SSNodeForm(ModelForm):
             "enable_ehco_lb": forms.CheckboxInput(attrs={"class": "checkbox"}),
         }
 
-    def _clean_one_port_many_user(self):
-        if (
-            self.cleaned_data.get("port")
-            and self.cleaned_data.get("method") not in AEAD_METHODS
-        ):
-            raise forms.ValidationError("当前加密方式不支持单端口多用户")
-
-    def clean_port(self):
-        self._clean_one_port_many_user()
-        return self.cleaned_data.get("port")
-
-    def clean_method(self):
-        self._clean_one_port_many_user()
-        return self.cleaned_data.get("method")
-
 
 class VmessNodeForm(ModelForm):
     class Meta:
@@ -229,10 +213,11 @@ class TrojanNodeForm(ModelForm):
             "ehco_transport_type": forms.Select(attrs={"class": "input"}),
             "network": forms.TextInput(attrs={"class": "input"}),
             "alpn": forms.TextInput(attrs={"class": "input"}),
-            "certificateFile": forms.TextInput(attrs={"class": "input"}),
-            "keyFile": forms.TextInput(attrs={"class": "input"}),
+            "certificate_file": forms.TextInput(attrs={"class": "input"}),
+            "key_file": forms.TextInput(attrs={"class": "input"}),
             "enable_ehco_lb": forms.CheckboxInput(attrs={"class": "checkbox"}),
             "security": forms.TextInput(attrs={"class": "input"}),
+            "skip_cert_verify": forms.CheckboxInput(attrs={"class": "checkbox"}),
         }
 
 
@@ -257,7 +242,6 @@ class UserForm(ModelForm):
             "level_expire_time",
             "ss_port",
             "ss_password",
-            "ss_method",
         ]
         widgets = {
             "balance": forms.NumberInput(attrs={"class": "input"}),
@@ -265,5 +249,4 @@ class UserForm(ModelForm):
             "level_expire_time": forms.DateTimeInput(attrs={"class": "input"}),
             "ss_port": forms.NumberInput(attrs={"class": "input"}),
             "ss_password": forms.TextInput(attrs={"class": "input"}),
-            "ss_method": forms.Select(attrs={"class": "input"}),
         }
