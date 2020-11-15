@@ -19,7 +19,6 @@ from django.core.mail import send_mail
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import connection, models, transaction
 from django.forms.models import model_to_dict
-from django.template.loader import render_to_string
 from django.utils import functional, timezone
 from redis.exceptions import LockError
 
@@ -34,29 +33,6 @@ from apps.utils import (
 
 
 class User(AbstractUser):
-
-    SUB_TYPE_SS = "ss"
-    SUB_TYPE_VMESS = "vmess"
-    SUB_TYPE_TROJAN = "trojan"
-    SUB_TYPE_ALL = "all"
-    SUB_TYPE_CLASH = "clash"
-    SUB_TYPE_CLASH_PRO = "clash_pro"
-    SUB_TYPES_SET = {
-        SUB_TYPE_SS,
-        SUB_TYPE_VMESS,
-        SUB_TYPE_TROJAN,
-        SUB_TYPE_ALL,
-        SUB_TYPE_CLASH,
-        SUB_TYPE_CLASH_PRO,
-    }
-    SUB_TYPES = (
-        (SUB_TYPE_SS, "只订阅SS"),
-        (SUB_TYPE_VMESS, "只订阅Vmess"),
-        (SUB_TYPE_TROJAN, "只订阅Trojan"),
-        (SUB_TYPE_ALL, "订阅所有"),
-        (SUB_TYPE_CLASH, "通过Clash订阅所有"),
-        (SUB_TYPE_CLASH_PRO, "通过ClashPro订阅所有"),
-    )
 
     MIN_PORT = 1025
     PORT_BLACK_SET = {6443, 8472}
@@ -270,43 +246,6 @@ class User(AbstractUser):
         self.port = port
         self.save()
         return port
-
-    def get_sub_links(self, sub_type):
-        if sub_type not in self.SUB_TYPES_SET:
-            sub_type = self.SUB_TYPE_CLASH
-
-        if sub_type in [self.SUB_TYPE_CLASH, self.SUB_TYPE_CLASH_PRO]:
-            return self.get_clash_sub_links(sub_type)
-        node_list = []
-        if sub_type in [self.SUB_TYPE_SS, self.SUB_TYPE_ALL]:
-            node_list.extend(SSNode.get_user_active_nodes(self, True))
-        if sub_type in [self.SUB_TYPE_VMESS, self.SUB_TYPE_ALL]:
-            node_list.extend(VmessNode.get_user_active_nodes(self, True))
-        if sub_type in [self.SUB_TYPE_TROJAN, self.SUB_TYPE_ALL]:
-            node_list.extend(TrojanNode.get_user_active_nodes(self, True))
-        sub_links = "MAX={}\n".format(len(node_list))
-        for node in node_list:
-            if type(node) == SSNode:
-                sub_links += node.get_ss_link(self) + "\n"
-            if type(node) == VmessNode:
-                sub_links += node.get_vmess_link(self) + "\n"
-            if type(node) == TrojanNode:
-                sub_links += node.get_trojan_link(self) + "\n"
-        sub_links = base64.urlsafe_b64encode(sub_links.encode()).decode()
-        return sub_links
-
-    def get_clash_sub_links(self, sub_type):
-        node_list = (
-            SSNode.get_user_active_nodes(self, sub_mode=True)
-            + VmessNode.get_user_active_nodes(self, sub_mode=True)
-            + TrojanNode.get_user_active_nodes(self, sub_mode=True)
-        )
-
-        for node in node_list:
-            node.clash_link = node.get_clash_link(self)
-        return render_to_string(
-            "yamls/clash.yml", {"nodes": node_list, "sub_type": sub_type}
-        )
 
     def update_ss_config_from_dict(self, data):
         clean_fields = ["ss_password"]

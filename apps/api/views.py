@@ -14,15 +14,12 @@ from apps.sspanel.models import (
     Donate,
     Goods,
     InviteCode,
-    RelayNode,
-    SSNode,
     User,
     UserCheckInLog,
     UserOrder,
     UserRefLog,
-    UserTrafficLog,
-    VmessNode,
 )
+from apps.sub import UserSubManager
 from apps.utils import (
     api_authorized,
     get_current_datetime,
@@ -82,7 +79,6 @@ class UserSettingsView(View):
 
 class SubscribeView(View):
     def get(self, request):
-        # TODO change this
         token = request.GET.get("token")
         if not token:
             return HttpResponseNotFound()
@@ -91,7 +87,7 @@ class SubscribeView(View):
             return HttpResponseNotFound()
 
         sub_type = request.GET.get("sub_type")
-        sub_links = user.get_sub_links(sub_type)
+        sub_links = UserSubManager(user, sub_type).get_sub_links()
         return HttpResponse(sub_links)
 
 
@@ -110,13 +106,10 @@ class UserTrafficChartView(View):
     @method_decorator(login_required)
     def get(self, request):
         node_id = request.GET.get("node_id", 0)
-        node_type = request.GET.get("node_type", "ss")
         user_id = request.user.pk
         now = get_current_datetime()
         last_week = [now.subtract(days=i) for i in range(6, -1, -1)]
-        configs = UserTrafficLog.gen_line_chart_configs(
-            user_id, node_type, node_id, last_week
-        )
+        configs = m.UserTrafficLog.gen_line_chart_configs(user_id, node_id, last_week)
         return JsonResponse(configs)
 
 
@@ -135,11 +128,10 @@ class ProxyConfigsView(View):
     @method_decorator(handle_json_post)
     @method_decorator(api_authorized)
     def post(self, request, node_id):
-        # TODO
-        node = SSNode.get_or_none_by_node_id(node_id)
+        node = m.ProxyNode.get_or_none(node_id)
         if not node:
             return HttpResponseNotFound()
-        tasks.sync_user_ss_traffic_task.delay(node_id, request.json["data"])
+        tasks.sync_user_traffic_task.delay(node_id, request.json["data"])
         return JsonResponse(data={})
 
 
@@ -148,7 +140,7 @@ class EhcoRelayConfigView(View):
 
     @method_decorator(api_authorized)
     def get(self, request, node_id):
-        node = RelayNode.get_or_none_by_node_id(node_id)
+        node = m.RelayNode.get_or_none(node_id)
         if not node:
             return HttpResponseNotFound()
         return JsonResponse(node.get_relay_rules_configs())
@@ -159,11 +151,7 @@ class EhcoServerConfigView(View):
 
     @method_decorator(api_authorized)
     def get(self, request, node_id):
-        node_type = self.request.GET.get("node_type")
-        if node_type == "ss":
-            node = SSNode.get_or_none_by_node_id(node_id)
-        else:
-            node = VmessNode.get_or_none_by_node_id(node_id)
+        node = m.ProxyNode.get_or_none(node_id)
         if not node:
             return HttpResponseNotFound()
         return JsonResponse(node.get_ehco_server_config())

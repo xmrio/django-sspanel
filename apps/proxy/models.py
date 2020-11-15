@@ -1,6 +1,8 @@
+import base64
+import json
 from decimal import Decimal
 from functools import cached_property
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from django.conf import settings
 from django.db import models
@@ -19,6 +21,10 @@ class BaseNodeModel(BaseModel):
 
     class Meta:
         abstract = True
+
+    @property
+    def multi_server_address(self):
+        return self.server.split(",")
 
 
 class ProxyNode(BaseNodeModel, SequenceMixin):
@@ -64,14 +70,22 @@ class ProxyNode(BaseNodeModel, SequenceMixin):
         return f"{self.name}({self.node_type})"
 
     @classmethod
-    def get_active_nodes(cls, sub_mode=False):
+    def get_active_nodes(cls, level=None):
+        query = cls.objects.filter(enable=True)
+        if level:
+            query = query.filter(level__lte=level)
         active_nodes = list(
-            cls.objects.filter(enable=True)
-            .select_related("ss_config")
+            query.select_related("ss_config")
             .prefetch_related("relay_rules")
             .order_by("sequence")
         )
         return active_nodes
+
+    @classmethod
+    def increase_used_traffic(cls, id, used_traffic):
+        cls.objects.filter(id=id).update(
+            used_traffic=models.F("used_traffic") + used_traffic
+        )
 
     def get_ss_node_config(self):
         configs = {"users": []}
@@ -109,6 +123,81 @@ class ProxyNode(BaseNodeModel, SequenceMixin):
             return self.get_ss_node_config()
         return {}
 
+    def get_ehco_server_config(self):
+        return {
+            "configs": [
+                {
+                    "listen": f"{self.ehco_listen_host}:{self.ehco_listen_port}",
+                    "listen_type": self.ehco_listen_type,
+                    "remote": f"127.0.0.1:{self.ehco_relay_port}",
+                    "transport_type": self.ehco_transport_type,
+                    "white_ip_list": RelayNode.get_ip_list(),
+                }
+            ]
+        }
+
+    def get_user_ss_port(self, user):
+        if not self.ss_config.multi_user_port:
+            return user.ss_port
+        return self.ss_config.multi_user_port
+
+    def get_user_node_link(self, user, relay_rule=None):
+        if self.node_type == self.NODE_TYPE_SS:
+            if relay_rule:
+                host = relay_rule.relay_host
+                port = relay_rule.relay_port
+                remark = relay_rule.remark
+            else:
+                host = self.multi_server_address[0]
+                port = self.get_user_ss_port(user)
+                remark = self.name
+            code = f"{self.ss_config.method}:{user.ss_password}@{host}:{port}"
+            b64_code = base64.urlsafe_b64encode(code.encode()).decode()
+            ss_link = "ss://{}#{}".format(b64_code, quote(remark))
+            return ss_link
+        return ""
+
+    def get_user_clash_config(self, user, relay_rule=None):
+        config = {}
+        if self.node_type == self.NODE_TYPE_SS:
+            if relay_rule:
+                host = relay_rule.relay_host
+                port = relay_rule.relay_port
+                remark = relay_rule.remark
+            else:
+                host = self.multi_server_address[0]
+                port = self.get_user_ss_port(user)
+                remark = self.name
+            config = {
+                "name": remark,
+                "type": self.NODE_TYPE_SS,
+                "server": host,
+                "port": port,
+                "cipher": self.ss_config.method,
+                "password": user.ss_password,
+            }
+        return json.dumps(config, ensure_ascii=False)
+
+    def to_dict_with_extra_info(self, user):
+        data = model_to_dict(self)
+        data.update(NodeOnlineLog.get_latest_online_log_info(self))
+        data["country"] = self.country.lower()
+        data["ss_password"] = user.ss_password
+        data["node_link"] = self.get_user_node_link(user)
+
+        # NOTE ss only section
+        if self.node_type == self.NODE_TYPE_SS:
+            data["ss_port"] = self.get_user_ss_port(user)
+            data["method"] = self.ss_config.method
+
+        if self.enable_relay:
+            data["enable_relay"] = True
+            data["relay_rules"] = [
+                rule.to_dict_with_extra_info(user)
+                for rule in self.relay_rules.filter(relay_node__enable=True)
+            ]
+        return data
+
     @property
     def human_total_traffic(self):
         return utils.traffic_format(self.total_traffic)
@@ -116,6 +205,10 @@ class ProxyNode(BaseNodeModel, SequenceMixin):
     @property
     def human_used_traffic(self):
         return utils.traffic_format(self.used_traffic)
+
+    @property
+    def overflow(self):
+        return (self.used_traffic) > self.total_traffic
 
     @property
     def api_endpoint(self):
@@ -129,6 +222,13 @@ class ProxyNode(BaseNodeModel, SequenceMixin):
     def ehco_api_endpoint(self):
         params = {"token": settings.TOKEN}
         return settings.HOST + f"/api/ehco_server_config/{self.id}/?{urlencode(params)}"
+
+    @property
+    def ehco_relay_port(self):
+        if self.node_type == self.NODE_TYPE_SS:
+            return self.ss_config.multi_user_port
+        # TODO 支持其他节点类型
+        return None
 
     @cached_property
     def online_info(self):
@@ -189,14 +289,38 @@ class RelayNode(BaseNodeModel):
     def __str__(self) -> str:
         return self.name
 
+    @classmethod
+    def get_ip_list(cls):
+        return [node.server for node in cls.objects.filter(enable=True)]
+
+    def get_relay_rules_configs(self):
+        data = []
+        for rule in self.relay_rules.select_related("proxy_node").all():
+            node = rule.proxy_node
+            remotes = []
+            for server in node.multi_server_address:
+                if node.enable_ehco_tunnel:
+                    remote = f"{server}:{node.ehco_listen_port}"
+                else:
+                    remote = f"{server}:{node.port}"
+                if rule.transport_type in c.WS_TRANSPORTS:
+                    remote = "wss://" + remote
+                remotes.append(remote)
+            data.append(
+                {
+                    "listen": f"0.0.0.0:{rule.relay_port}",
+                    "listen_type": rule.listen_type,
+                    "remote": "",
+                    "lb_remotes": remotes,
+                    "transport_type": rule.transport_type,
+                }
+            )
+        return {"configs": data}
+
     @property
     def api_endpoint(self):
         params = {"token": settings.TOKEN}
         return settings.HOST + f"/api/ehco_relay_config/{self.id}/?{urlencode(params)}"
-
-    @classmethod
-    def get_ip_list(cls):
-        return [node.server for node in cls.objects.filter(enable=True)]
 
 
 class RelayRule(BaseModel):
@@ -231,7 +355,7 @@ class RelayRule(BaseModel):
 
     def to_dict_with_extra_info(self, user):
         data = model_to_dict(self)
-        data["relay_link"] = self.get_user_relay_link(user)
+        data["relay_link"] = self.proxy_node.get_user_node_link(user, self)
         data["relay_host"] = self.relay_host
         data["remark"] = self.remark
         return data
@@ -246,7 +370,7 @@ class RelayRule(BaseModel):
 
     @property
     def remark(self):
-        name = f"{self.relay_node.name}->{self.proxy_node.name}({self.proxy_node.node_type})"
+        name = f"{self.relay_node.name}{self.relay_node.isp}-{self.proxy_node.name}"
         if self.proxy_node.enlarge_scale != Decimal(1.0):
             name += f"-{self.proxy_node.enlarge_scale}倍"
         return name
@@ -268,6 +392,14 @@ class NodeOnlineLog(BaseLogModel):
 
     def __str__(self) -> str:
         return f"{self.proxy_node.name}节点在线记录"
+
+    @classmethod
+    def add_log(cls, proxy_node, online_user_count, tcp_connections_count=0):
+        return cls.objects.create(
+            proxy_node=proxy_node,
+            online_user_count=online_user_count,
+            tcp_connections_count=tcp_connections_count,
+        )
 
     @classmethod
     def get_latest_log(cls, proxy_node):
@@ -317,6 +449,48 @@ class UserTrafficLog(BaseLogModel):
 
     def __str__(self) -> str:
         return f"{self.proxy_node.name}用户流量记录"
+
+    @classmethod
+    def calc_user_total_traffic(cls, proxy_node, user_id):
+        logs = cls.objects.filter(user_id=user_id, proxy_node=proxy_node)
+        aggs = logs.aggregate(
+            u=models.Sum("upload_traffic"), d=models.Sum("download_traffic")
+        )
+        ut = aggs["u"] if aggs["u"] else 0
+        dt = aggs["d"] if aggs["d"] else 0
+        return utils.traffic_format(ut + dt)
+
+    @classmethod
+    def calc_user_traffic_by_date(cls, user_id, proxy_node, date):
+        logs = cls.objects.filter(
+            user_id=user_id,
+            proxy_node=proxy_node,
+            created_at__range=[date.start_of("day"), date.end_of("day")],
+        )
+        aggs = logs.aggregate(
+            u=models.Sum("upload_traffic"), d=models.Sum("download_traffic")
+        )
+        ut = aggs["u"] if aggs["u"] else 0
+        dt = aggs["d"] if aggs["d"] else 0
+        return (ut + dt) // settings.MB
+
+    @classmethod
+    def gen_line_chart_configs(cls, user_id, node_id, date_list):
+        proxy_node = ProxyNode.get_or_none(node_id)  # node must exists
+        user_total_traffic = cls.calc_user_total_traffic(proxy_node, user_id)
+        date_list = sorted(date_list)
+        line_config = {
+            "title": "节点 {} 当月共消耗：{}".format(proxy_node.name, user_total_traffic),
+            "labels": ["{}-{}".format(t.month, t.day) for t in date_list],
+            "data": [
+                cls.calc_user_traffic_by_date(user_id, proxy_node, date)
+                for date in date_list
+            ],
+            "data_title": proxy_node.name,
+            "x_label": f"日期 最近{len(date_list)}天",
+            "y_label": "流量 单位：MB",
+        }
+        return line_config
 
     @property
     def total_traffic(self):
