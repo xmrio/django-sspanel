@@ -9,7 +9,7 @@ from django.views import View
 
 from apps.custom_views import PageListView
 from apps.mixin import StaffRequiredMixin
-from apps.proxy.models import ProxyNode
+from apps.proxy.models import NodeOnlineLog, ProxyNode, UserOnLineIpLog
 from apps.sspanel.forms import AnnoForm, GoodsForm, UserForm
 from apps.sspanel.models import (
     Announcement,
@@ -17,12 +17,10 @@ from apps.sspanel.models import (
     Goods,
     InviteCode,
     MoneyCode,
-    NodeOnlineLog,
     PurchaseHistory,
     Ticket,
     User,
     UserCheckInLog,
-    UserOnLineIpLog,
 )
 
 
@@ -44,7 +42,7 @@ class UserOnlineIpLogView(StaffRequiredMixin, View):
     def get(self, request):
         data = []
         for node in ProxyNode.get_active_nodes():
-            data.extend(UserOnLineIpLog.get_recent_log_by_node_id(node.id))
+            data.extend(UserOnLineIpLog.get_recent_log_by_node_id(node))
         context = PageListView(request, data).get_page_context()
         return render(request, "my_admin/user_online_ip_log.html", context=context)
 
