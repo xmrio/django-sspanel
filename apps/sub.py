@@ -4,7 +4,9 @@ from uuid import uuid4
 from django.conf import settings
 from django.template.loader import render_to_string
 
+from apps import utils
 from apps.proxy import models as pm
+from apps.sspanel import models as sm
 
 
 class UserSubManager:
@@ -23,20 +25,14 @@ class UserSubManager:
         SUB_TYPE_CLASH,
         SUB_TYPE_CLASH_PRO,
     }
-    SUB_TYPES = (
-        (SUB_TYPE_SS, "只订阅SS"),
-        (SUB_TYPE_VLESS, "只订阅Vless"),
-        (SUB_TYPE_TROJAN, "只订阅Trojan"),
-        (SUB_TYPE_CLASH, "通过Clash订阅所有"),
-        (SUB_TYPE_CLASH_PRO, "通过ClashPro订阅所有"),
-    )
 
-    def __init__(self, user, sub_type):
+    def __init__(self, user, sub_type, request):
         self.user = user
         if sub_type not in self.SUB_TYPES_SET:
             sub_type = self.SUB_TYPE_SS
         self.sub_type = sub_type
         self.node_list = self._fill_fake_node()
+        sm.UserSubLog.add_log(user, sub_type, utils.get_client_ip(request))
 
     def _fill_fake_node(self):
         """根据用户信息拿出所有需要的node并添加一些虚拟节点
@@ -47,13 +43,13 @@ class UserSubManager:
         node_list = pm.ProxyNode.get_active_nodes(level=self.user.level)
         fake_node = []
         note_list = [
-            f"{settings.TITLE}官网: {settings.HOST}",
+            f"{settings.TITLE}官网：{settings.HOST}",
         ]
         if len(node_list) > 0:
             note_list.extend(
                 [
-                    f"等级: {self.user.level} 到期时间: {self.user.level_expire_time.date()}",
-                    f"剩余流量:{self.user.human_remain_traffic},总流量:{self.user.human_total_traffic}",
+                    f"等级：{self.user.level} 到期时间：{self.user.level_expire_time.date()}",
+                    f"剩余流量：{self.user.human_remain_traffic},总流量：{self.user.human_total_traffic}",
                 ]
             )
         else:
