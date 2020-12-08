@@ -1,5 +1,4 @@
 import datetime
-import decimal
 import random
 import re
 import time
@@ -191,6 +190,15 @@ class User(AbstractUser):
     def get_user_order_by_traffic(cls, count=10):
         # NOTE 后台展示用 暂时不加索引
         return cls.objects.all().order_by("-download_traffic")[:count]
+
+    @classmethod
+    def get_new_user_count_by_date(cls, date):
+        return cls.objects.filter(
+            date_joined__range=[
+                date.start_of("day"),
+                date.end_of("day"),
+            ]
+        ).aggregate(count=models.Count("id"))["count"]
 
     @property
     def sub_link(self):
@@ -403,53 +411,21 @@ class UserOrder(models.Model, UserMixin):
             return success
 
     @classmethod
-    def gen_bar_chart_configs(cls, last_week):
-        """获取指定日期的的订单统计"""
-        bar_config = {
-            "labels": [f"{date.month}-{date.day}" for date in last_week],
-            "data": [
-                cls.objects.filter(
-                    created_at__range=[
-                        t.start_of("day"),
-                        t.end_of("day"),
-                    ]
-                ).count()
-                for t in last_week
-            ],
-            "data_title": "每日订单数量",
-        }
-        return bar_config
+    @cache.cached(ttl=c.CACHE_TTL_MONTH)
+    def _get_success_order_count(cls, dt: pendulum.DateTime):
+        return cls.objects.filter(
+            created_at__range=[dt.start_of("day"), dt.end_of("day")],
+            status=cls.STATUS_FINISHED,
+        ).count()
 
     @classmethod
-    def get_last_week_status_data(cls):
-        """获取最近一周的订单统计数据
-        1. 一周的订单趋势
-        2. 一周的收入统计
-        3. 今日的收入统计
-        """
-        now = utils.get_current_datetime()
-        last_week = [now.subtract(days=i) for i in range(6, -1, -1)]
-        today_amount = cls.objects.filter(
-            status=cls.STATUS_FINISHED,
-            created_at__range=[
-                now.start_of("day"),
-                now.end_of("day"),
-            ],
-        ).aggregate(amount=models.Sum("amount"))["amount"]
-        week_amount = cls.objects.filter(
-            status=cls.STATUS_FINISHED,
-            created_at__range=[
-                last_week[0].start_of("day"),
-                last_week[-1].end_of("day"),
-            ],
-        ).aggregate(amount=models.Sum("amount"))["amount"]
-        return {
-            "bar_chart_configs": cls.gen_bar_chart_configs(last_week),
-            "amount_status": [
-                int(decimal.Decimal(week_amount)),
-                int(decimal.Decimal(today_amount)),
-            ],
-        }
+    def get_success_order_count(cls, date: pendulum.DateTime):
+        """获取指定日期的订单数量,只有今天的数据会hit db"""
+        date = date.start_of("day")
+        today = utils.get_current_datetime()
+        if date.date() == today.date():
+            return cls._get_success_order_count.uncached(cls, date)
+        return cls._get_success_order_count(date)
 
     def handle_paid(self):
         # NOTE Must use in transaction
@@ -497,19 +473,11 @@ class UserRefLog(models.Model, UserMixin):
         return cls.objects.filter(user_id=user_id, date__in=date_list)
 
     @classmethod
-    def gen_bar_chart_configs(cls, user_id, date_list):
-        """set register_count to 0 if the query date log not exists"""
-        date_list = sorted(date_list)
-        logs = {
-            log.date: log.register_count
-            for log in cls.list_by_user_id_and_date_list(user_id, date_list)
-        }
-        bar_config = {
-            "labels": [f"{date.month}-{date.day}" for date in date_list],
-            "data": [logs.get(date, 0) for date in date_list],
-            "data_title": "每日邀请注册人数",
-        }
-        return bar_config
+    def calc_user_total_ref_count(cls, user_id):
+        aggs = cls.objects.filter(user_id=user_id).aggregate(
+            register_count=models.Sum("register_count")
+        )
+        return aggs["register_count"] if aggs["register_count"] else 0
 
 
 class UserCheckInLog(models.Model, UserMixin):

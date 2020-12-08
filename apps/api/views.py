@@ -1,5 +1,4 @@
 import pendulum
-from django.conf import settings
 from django.contrib.auth.decorators import login_required, permission_required
 from django.http import HttpResponse, HttpResponseNotFound, JsonResponse
 from django.utils.decorators import method_decorator
@@ -10,17 +9,12 @@ from django.views.decorators.http import require_http_methods
 from apps.ext import encoder, lock
 from apps.proxy import models as m
 from apps.sspanel import tasks
-from apps.sspanel.models import (
-    Goods,
-    InviteCode,
-    User,
-    UserCheckInLog,
-    UserOrder,
-    UserRefLog,
-)
+from apps.sspanel.models import Goods, InviteCode, User, UserCheckInLog, UserOrder
 from apps.sub import UserSubManager
+from apps.tianyi import DashBoardManger
 from apps.utils import (
     api_authorized,
+    gen_date_list,
     get_current_datetime,
     handle_json_post,
     traffic_format,
@@ -30,25 +24,10 @@ from apps.utils import (
 class SystemStatusView(View):
     @method_decorator(permission_required("sspanel"))
     def get(self, request):
-        # TODO 增加每日用户统计，活跃用户统计
-        user_status = [
-            m.NodeOnlineLog.get_all_node_online_user_count(),
-            User.get_today_register_user().count(),
-            UserCheckInLog.get_today_checkin_user_count(),
-            User.get_never_used_user_count(),
-        ]
-
-        active_nodes = m.ProxyNode.get_active_nodes()
-        node_status = {
-            "names": [node.name for node in active_nodes],
-            "traffics": [
-                round(node.used_traffic / settings.GB, 2) for node in active_nodes
-            ],
-        }
         data = {
-            "user_status": user_status,
-            "node_status": node_status,
-            "order_status": UserOrder.get_last_week_status_data(),
+            "user_status": DashBoardManger.get_user_last_week_status_data(),
+            "node_status": DashBoardManger.get_node_status(),
+            "order_status": DashBoardManger.get_userorder_last_week_status_data(),
         }
         return JsonResponse(data)
 
@@ -87,11 +66,12 @@ class SubscribeView(View):
 class UserRefChartView(View):
     @method_decorator(login_required)
     def get(self, request):
-        # 最近10天的
         date = request.GET.get("date")
         t = pendulum.parse(date) if date else get_current_datetime()
-        date_list = [t.add(days=i).date() for i in range(-7, 3)]
-        bar_configs = UserRefLog.gen_bar_chart_configs(request.user.id, date_list)
+        date_list = gen_date_list(t)
+        bar_configs = DashBoardManger.gen_ref_log_bar_chart_configs(
+            request.user.id, date_list
+        )
         return JsonResponse(bar_configs)
 
 
@@ -100,9 +80,10 @@ class UserTrafficChartView(View):
     def get(self, request):
         node_id = request.GET.get("node_id", 0)
         user_id = request.user.pk
-        now = get_current_datetime()
-        last_week = [now.subtract(days=i) for i in range(6, -1, -1)]
-        configs = m.UserTrafficLog.gen_line_chart_configs(user_id, node_id, last_week)
+        last_week = gen_date_list(get_current_datetime())
+        configs = DashBoardManger.gen_traffic_line_chart_configs(
+            user_id, node_id, last_week
+        )
         return JsonResponse(configs)
 
 
