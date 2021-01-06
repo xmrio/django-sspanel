@@ -17,14 +17,20 @@ class UserOrderAdmin(admin.ModelAdmin):
         "out_trade_no",
         "amount",
         "created_at",
-        "expired_at",
         "user_date_joined",
+        "inviter",
     ]
 
     def user_date_joined(self, obj):
         return obj.user.date_joined
 
+    def inviter(self, obj):
+        if obj.user.inviter_id:
+            return models.User.get_by_id_with_cache(obj.user.inviter_id)
+        return "无邀请人"
+
     user_date_joined.short_description = "用户注册时间"
+    inviter.short_description = "邀请人"
 
     search_fields = ["user__username", "user__id"]
     list_filter = ["amount", "status", "created_at"]
